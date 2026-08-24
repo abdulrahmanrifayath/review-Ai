@@ -5,12 +5,19 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# Install system dependencies (build-essential, git for tree-sitter or tools)
+# Install system dependencies (build-essential, git, Node.js, OpenJDK JRE)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     git \
+    nodejs \
+    npm \
+    openjdk-17-jre-headless \
     && rm -rf /var/lib/apt/lists/*
+
+# Install JS/TS static linter dependencies
+RUN npm install -g eslint@8.57.0 @typescript-eslint/parser@7.10.0 @typescript-eslint/eslint-plugin@7.10.0
+
 
 COPY requirements.txt .
 

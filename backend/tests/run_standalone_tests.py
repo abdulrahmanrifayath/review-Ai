@@ -212,7 +212,14 @@ def clean_function(x: int) -> int:
     t_e2e.test_complete_end_to_end_review_pipeline_flow()
     print("PASS: End-to-End Workflow Integration Test")
 
-    print("\nAll backend engine, API, webhook, security, quality, finalization, settings, and E2E integration tests passed successfully!")
+    import tests.test_analyzer_reliability as t_rel
+    t_rel.test_analyzer_health_status_check()
+    t_rel.test_missing_analyzer_graceful_fallback_and_warning()
+    t_rel.test_partial_analysis_success_multi_language()
+    print("PASS: Static Analysis Infrastructure Reliability & Fallback Tests")
+
+    print("\nAll backend engine, API, webhook, security, quality, finalization, settings, reliability, and E2E integration tests passed successfully!")
+
 
 if __name__ == "__main__":
     run_tests()

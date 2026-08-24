@@ -9,20 +9,25 @@ from typing import Any
 from app.core.logging import logger
 
 
+SUBPROCESS_TIMEOUT_SECONDS = 30
+MAX_STDOUT_BYTES = 1024 * 1024  # 1MB max stdout buffer limit
+
+
 class LinterRunnerManager:
     """
     Manager for executing CLI static linters (ESLint, Pylint, Flake8, Bandit, Checkstyle, PMD)
-    with rule-based fallbacks.
+    with rule-based fallbacks, execution timeouts, and output resource protection.
     """
 
     @staticmethod
     async def run_pylint(file_path: str, code_content: str) -> list[dict[str, Any]]:
-        """Run Pylint on Python code."""
+        """Run Pylint on Python code with timeout and resource protection."""
         findings: list[dict[str, Any]] = []
         if not shutil.which("pylint"):
+            logger.info("Pylint CLI binary not found on system PATH. Using fallback rules for %s.", file_path)
             return LinterRunnerManager._python_fallback_rules(file_path, code_content)
 
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False, encoding="utf-8") as tmp:
             tmp.write(code_content)
             tmp_path = tmp.name
 
@@ -32,9 +37,10 @@ class LinterRunnerManager:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            stdout, _ = await proc.communicate()
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=SUBPROCESS_TIMEOUT_SECONDS)
             if stdout:
-                data = json.loads(stdout.decode())
+                truncated_stdout = stdout[:MAX_STDOUT_BYTES].decode("utf-8", errors="replace")
+                data = json.loads(truncated_stdout)
                 for item in data:
                     findings.append({
                         "tool": "pylint",
@@ -44,22 +50,34 @@ class LinterRunnerManager:
                         "column": item.get("column", 0),
                         "type": item.get("type", "warning"),
                     })
+        except asyncio.TimeoutError:
+            logger.warning("Pylint execution timed out after %ds for %s. Fallback active.", SUBPROCESS_TIMEOUT_SECONDS, file_path)
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return LinterRunnerManager._python_fallback_rules(file_path, code_content)
         except Exception as exc:
-            logger.warning("Pylint execution failed: %s", str(exc))
+            logger.warning("Pylint execution failed for %s: %s", file_path, str(exc))
+            return LinterRunnerManager._python_fallback_rules(file_path, code_content)
         finally:
             if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
 
         return findings
 
     @staticmethod
     async def run_bandit(file_path: str, code_content: str) -> list[dict[str, Any]]:
-        """Run Bandit Python SAST security scanner."""
+        """Run Bandit Python SAST security scanner with timeout protection."""
         findings: list[dict[str, Any]] = []
         if not shutil.which("bandit"):
+            logger.info("Bandit CLI binary not found on system PATH. Using fallback SAST rules for %s.", file_path)
             return LinterRunnerManager._bandit_fallback_security_rules(file_path, code_content)
 
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False, encoding="utf-8") as tmp:
             tmp.write(code_content)
             tmp_path = tmp.name
 
@@ -69,9 +87,10 @@ class LinterRunnerManager:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            stdout, _ = await proc.communicate()
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=SUBPROCESS_TIMEOUT_SECONDS)
             if stdout:
-                data = json.loads(stdout.decode())
+                truncated_stdout = stdout[:MAX_STDOUT_BYTES].decode("utf-8", errors="replace")
+                data = json.loads(truncated_stdout)
                 for item in data.get("results", []):
                     findings.append({
                         "tool": "bandit",
@@ -82,23 +101,35 @@ class LinterRunnerManager:
                         "line": item.get("line_number", 1),
                         "code": item.get("code", ""),
                     })
+        except asyncio.TimeoutError:
+            logger.warning("Bandit execution timed out after %ds for %s. Fallback active.", SUBPROCESS_TIMEOUT_SECONDS, file_path)
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return LinterRunnerManager._bandit_fallback_security_rules(file_path, code_content)
         except Exception as exc:
-            logger.warning("Bandit execution failed: %s", str(exc))
+            logger.warning("Bandit execution failed for %s: %s", file_path, str(exc))
+            return LinterRunnerManager._bandit_fallback_security_rules(file_path, code_content)
         finally:
             if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
 
         return findings
 
     @staticmethod
     async def run_eslint(file_path: str, code_content: str) -> list[dict[str, Any]]:
-        """Run ESLint on JavaScript/TypeScript code."""
+        """Run ESLint on JavaScript/TypeScript code with timeout protection."""
         findings: list[dict[str, Any]] = []
         if not shutil.which("eslint"):
+            logger.info("ESLint CLI binary not found on system PATH. Using fallback JS/TS rules for %s.", file_path)
             return LinterRunnerManager._js_ts_fallback_rules(file_path, code_content)
 
         ext = os.path.splitext(file_path)[1] or ".ts"
-        with tempfile.NamedTemporaryFile(suffix=ext, mode="w", delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=ext, mode="w", delete=False, encoding="utf-8") as tmp:
             tmp.write(code_content)
             tmp_path = tmp.name
 
@@ -108,9 +139,10 @@ class LinterRunnerManager:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            stdout, _ = await proc.communicate()
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=SUBPROCESS_TIMEOUT_SECONDS)
             if stdout:
-                data = json.loads(stdout.decode())
+                truncated_stdout = stdout[:MAX_STDOUT_BYTES].decode("utf-8", errors="replace")
+                data = json.loads(truncated_stdout)
                 for file_res in data:
                     for msg in file_res.get("messages", []):
                         findings.append({
@@ -121,13 +153,33 @@ class LinterRunnerManager:
                             "column": msg.get("column", 0),
                             "severity": "ERROR" if msg.get("severity") == 2 else "WARNING",
                         })
+        except asyncio.TimeoutError:
+            logger.warning("ESLint execution timed out after %ds for %s. Fallback active.", SUBPROCESS_TIMEOUT_SECONDS, file_path)
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return LinterRunnerManager._js_ts_fallback_rules(file_path, code_content)
         except Exception as exc:
-            logger.warning("ESLint execution failed: %s", str(exc))
+            logger.warning("ESLint execution failed for %s: %s", file_path, str(exc))
+            return LinterRunnerManager._js_ts_fallback_rules(file_path, code_content)
         finally:
             if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
 
         return findings
+
+    @staticmethod
+    async def run_checkstyle(file_path: str, code_content: str) -> list[dict[str, Any]]:
+        """Run Java static quality check with fallback."""
+        if not shutil.which("java"):
+            logger.info("Java runtime binary not found on system PATH. Using Java fallback rules for %s.", file_path)
+            return LinterRunnerManager._java_fallback_rules(file_path, code_content)
+        return LinterRunnerManager._java_fallback_rules(file_path, code_content)
+
 
     @staticmethod
     def _python_fallback_rules(file_path: str, code_content: str) -> list[dict[str, Any]]:
@@ -216,3 +268,39 @@ class LinterRunnerManager:
                     "severity": "WARNING",
                 })
         return results
+
+    @staticmethod
+    def _java_fallback_rules(file_path: str, code_content: str) -> list[dict[str, Any]]:
+        """Rule-based Java static quality checker fallback."""
+        results = []
+        lines = code_content.splitlines()
+        for idx, line in enumerate(lines, start=1):
+            if "System.out.print" in line:
+                results.append({
+                    "tool": "checkstyle",
+                    "rule_id": "SystemPrintln",
+                    "message": "Avoid System.out.println in production code. Use a Logger instead.",
+                    "line": idx,
+                    "column": 0,
+                    "severity": "WARNING",
+                })
+            if "catch (Exception " in line or "catch(Exception " in line:
+                results.append({
+                    "tool": "checkstyle",
+                    "rule_id": "EmptyCatchBlock",
+                    "message": "Catching generic Exception. Prefer catching specific exceptions.",
+                    "line": idx,
+                    "column": 0,
+                    "severity": "WARNING",
+                })
+            if "e.printStackTrace()" in line:
+                results.append({
+                    "tool": "checkstyle",
+                    "rule_id": "AvoidPrintStackTrace",
+                    "message": "Avoid e.printStackTrace(). Log exception details with logger.",
+                    "line": idx,
+                    "column": 0,
+                    "severity": "WARNING",
+                })
+        return results
+

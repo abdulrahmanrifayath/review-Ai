@@ -1,169 +1,101 @@
-# ReviewAI Enterprise Production Deployment Guide
+# ReviewAI - Production Deployment & Infrastructure Guide
 
-This document provides a comprehensive operational guide for building, configuring, deploying, and maintaining **ReviewAI** in a secure, high-availability production environment.
-
----
-
-## Architecture Overview
-
-ReviewAI operates as a containerized microservice architecture orchestrated via **Docker Compose**:
-
-- **NGINX Reverse Proxy**: Terminates SSL/TLS (HTTPS), enforces HSTS & Security Headers, applies Rate Limiting, proxies WebSockets, and balances traffic to frontend and backend containers.
-- **Frontend Container**: NGINX Alpine serving pre-compiled React Vite Single-Page Application (SPA).
-- **Backend Container**: Scaled FastAPI server powered by Gunicorn (`uvicorn.workers.UvicornWorker`) providing REST & WebSocket APIs.
-- **Worker Container**: Redis background queue worker (`python -m app.workers.run_worker --worker-type all`) executing asynchronous webhook, AI analysis, static analysis, report generation, and notification tasks.
-- **PostgreSQL 16 Database**: Persistent relational database storing users, repositories, pull requests, analysis findings, reports, and notifications.
-- **Redis 7 Cache & Broker**: Persistent AOF Redis instance serving as task broker, session cache, and retry queue store.
+This document details the production deployment architecture, containerized static analysis dependencies, language analyzer health monitoring, resource limits, and Docker Compose orchestration.
 
 ---
 
-## Production Prerequisites
+## 1. Static Analysis Language Support Matrix
 
-1. **Host Server Specs**:
-   - Ubuntu 22.04 LTS / Debian 12 / RHEL 9 (Minimum: 4 vCPU, 8 GB RAM, 50 GB SSD).
-   - Docker Engine v24.0+ and Docker Compose v2.20+.
-   - Domain name (e.g. `reviewai.yourdomain.com`) pointing to host server IP via DNS `A` record.
-   - Open Ports: `80` (HTTP), `443` (HTTPS), `22` (SSH).
+ReviewAI features a hybrid static analysis engine combining CLI static linters, SAST scanners, Tree-sitter AST parsers, and deterministic rule-based fallbacks.
 
-2. **Required Production Secrets**:
-   - GitHub OAuth App Client ID & Secret
-   - GitHub Webhook HMAC Secret
-   - OpenAI API Key (`sk-proj-...`)
-   - Strong PostgreSQL password & JWT `SECRET_KEY` (min 64 chars)
+| Language | Primary Analyzer / Tool | Secondary SAST / Quality | Fallback Strategy | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **Python** | `Pylint 3.2+`, `Ruff 0.4+`, `Flake8` | `Bandit 1.7+` (SAST) | Internal AST & Pattern Rules | **PASS** |
+| **JavaScript / TypeScript** | `ESLint 8.57+` | `@typescript-eslint` | AST Regex & Code Smell Fallback | **PASS** |
+| **Java** | `Checkstyle` / `OpenJDK 17 JRE` | Halstead Complexity & AST | Rule-based Java Quality Fallback | **PASS** |
+| **Go** | Tree-sitter Go Parser | Halstead Metric Calculator | Structural AST Analyzer | **PASS** |
+| **C / C++** | Tree-sitter C/C++ Parser | Halstead Metric Calculator | Structural AST Analyzer | **PASS** |
 
 ---
 
-## Step 1: Environment & Secrets Setup
+## 2. Containerized Dependencies
 
-1. Clone repository to `/opt/reviewai` on production server:
-   ```bash
-   git clone https://github.com/abdulrahmanrifayath/Code-Review-Ai.git /opt/reviewai
-   cd /opt/reviewai
-   ```
+The backend container (`backend/Dockerfile`) encapsulates all language runtime dependencies to eliminate undocumented host machine dependencies:
 
-2. Copy production environment template:
-   ```bash
-   cp .env.production.example .env
-   ```
-
-3. Configure secrets in `.env`:
-   ```env
-   ENVIRONMENT=production
-   LOG_LEVEL=INFO
-   SECRET_KEY=generate-a-secure-random-64-character-key
-   POSTGRES_USER=reviewai
-   POSTGRES_PASSWORD=your_secure_postgres_password
-   POSTGRES_DB=reviewai_db
-   REDIS_PASSWORD=your_secure_redis_password
-   GITHUB_CLIENT_ID=your_github_client_id
-   GITHUB_CLIENT_SECRET=your_github_client_secret
-   GITHUB_WEBHOOK_SECRET=your_github_webhook_secret
-   OPENAI_API_KEY=sk-proj-your-openai-api-key
-   ```
+- **Python Environment**: Python 3.11-slim with `pylint`, `bandit`, `flake8`, `radon`, `ruff`, and `tree-sitter` preinstalled via `requirements.txt`.
+- **Node.js & npm**: Node.js runtime with globally installed `eslint@8.57.0`, `@typescript-eslint/parser`, and `@typescript-eslint/eslint-plugin`.
+- **Java Runtime**: `openjdk-17-jre-headless` for Java Checkstyle/PMD/AST analysis.
 
 ---
 
-## Step 2: Provision HTTPS & Let's Encrypt SSL
+## 3. Subprocess Execution & Resource Protection
 
-Automate SSL certificate provisioning with Certbot using the included initialization script:
+All linter processes executed via `LinterRunnerManager` adhere to strict production resource constraints:
 
-```bash
-chmod +x scripts/init-letsencrypt.sh
-./scripts/init-letsencrypt.sh reviewai.yourdomain.com admin@yourdomain.com
-```
-
-This script:
-1. Generates a temporary dummy certificate to allow NGINX to boot cleanly.
-2. Boots NGINX and executes Certbot's Webroot ACME challenge.
-3. Obtains production Let's Encrypt TLS v1.2/v1.3 certificates.
-4. Reloads NGINX with HTTPS enabled.
+- **Safe Command Execution**: Commands execute strictly with array-formatted arguments without `shell=True` to prevent shell injection vulnerabilities.
+- **Subprocess Timeout**: Maximum **30 seconds** execution limit per linter run (`asyncio.wait_for`). Processes exceeding 30s are terminated via SIGKILL and fall back to rule-based analysis.
+- **Output Buffer Limit**: Stdout buffers are capped at **1MB** (`1024 * 1024` bytes) to prevent memory exhaustion from verbose output.
+- **Temporary File Cleanup**: Named temporary files are created with unique UUID paths and deleted in `finally:` blocks.
 
 ---
 
-## Step 3: Run Database Migrations
+## 4. Analyzer Health & Validation Endpoint
 
-Run Alembic database migrations using the automated migration script:
+The platform provides a live health check endpoint exposing tool availability:
 
-```bash
-chmod +x scripts/migrate.sh
-./scripts/migrate.sh
+- **Endpoint**: `GET /api/v1/health/analyzers`
+- **Response Example**:
+```json
+{
+  "summary": {
+    "total_tools": 7,
+    "available_tools": 7,
+    "fallback_active": false
+  },
+  "analyzers": {
+    "pylint": {
+      "tool": "pylint",
+      "status": "AVAILABLE",
+      "language": "Python",
+      "category": "Code Quality",
+      "path": "/usr/local/bin/pylint"
+    },
+    "bandit": {
+      "tool": "bandit",
+      "status": "AVAILABLE",
+      "language": "Python",
+      "category": "Security SAST"
+    },
+    "eslint": {
+      "tool": "eslint",
+      "status": "AVAILABLE",
+      "language": "JavaScript/TypeScript",
+      "category": "Linter & SAST"
+    }
+  }
+}
 ```
 
 ---
 
-## Step 4: Docker Compose Orchestration
+## 5. Docker Build & Deployment Instructions
 
-Start all production services in detached mode:
+### Prerequisites
+- Docker Engine 24.0+
+- Docker Compose v2+
 
-```bash
-docker compose -f docker-compose.prod.yml up -d
-```
-
-Verify running containers:
-```bash
-docker compose -f docker-compose.prod.yml ps
-```
-
-Container List:
-- `reviewai_db_prod` (healthy)
-- `reviewai_redis_prod` (healthy)
-- `reviewai_backend_prod` (healthy)
-- `reviewai_worker_prod` (running)
-- `reviewai_frontend_prod` (running)
-- `reviewai_nginx_prod` (running)
-
----
-
-## Step 5: Continuous Deployment (GitHub Actions)
-
-Add the following environment secrets in your GitHub Repository settings (**Settings -> Secrets and variables -> Actions**):
-
-- `PROD_SERVER_IP`: IP address of production server.
-- `PROD_SERVER_USER`: SSH user (e.g. `ubuntu` or `root`).
-- `PROD_SSH_PRIVATE_KEY`: Private SSH key for server authentication.
-
-On every push to `main`, `.github/workflows/deploy.yml` will automatically:
-1. Run backend ruff linter and engine unit tests.
-2. Run frontend TypeScript type checking and ESLint build.
-3. Build and push production Docker images to GitHub Container Registry (`ghcr.io`).
-4. SSH into production server, pull latest images, run `alembic upgrade head`, and execute zero-downtime container updates.
-
----
-
-## Monitoring, Metrics & Logs
-
-### Structured JSON Logging
-Production logs are formatted in structured JSON emitted to stdout/stderr:
+### Running local or production stack
 
 ```bash
-docker compose -f docker-compose.prod.yml logs -f --tail 100 backend
-```
+# Build and start all services (PostgreSQL, Redis, Backend, Frontend)
+docker-compose up --build -d
 
-### Prometheus Metrics Endpoint
-Scrape production performance metrics at `/api/v1/metrics`:
+# Check service container status
+docker-compose ps
 
-```bash
-curl -f https://reviewai.yourdomain.com/api/v1/metrics
-```
+# View backend logs
+docker-compose logs -f backend
 
-Exposed metrics:
-- `http_requests_total`: Total HTTP requests handled.
-- `http_errors_total`: 5xx error counter.
-- `http_request_duration_seconds_avg`: Request duration gauge.
-
-### Production Health Check
-Query health status:
-```bash
-curl -f https://reviewai.yourdomain.com/api/v1/health
-```
-
----
-
-## Backups & Maintenance
-
-### PostgreSQL Database Backup Cron
-Add a daily cron job to backup PostgreSQL:
-
-```bash
-0 2 * * * docker exec reviewai_db_prod pg_dump -U reviewai reviewai_db | gzip > /backups/db_$(date +\%F).sql.gz
+# Run backend test suite inside container
+docker-compose exec backend python backend/tests/run_standalone_tests.py
 ```

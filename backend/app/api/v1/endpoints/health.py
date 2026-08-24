@@ -56,3 +56,13 @@ async def metrics_endpoint():
     """
     metrics_text = metrics_collector.generate_metrics_text()
     return Response(content=metrics_text, media_type="text/plain; version=0.0.4")
+
+
+@router.get("/health/analyzers", status_code=status.HTTP_200_OK)
+async def analyzers_health_endpoint():
+    """
+    Expose live health, availability, and fallback status for all configured static analysis language tools.
+    """
+    from app.services.static_analysis.analyzer_validator import AnalyzerToolValidator
+    return AnalyzerToolValidator.get_all_analyzers_status()
+
