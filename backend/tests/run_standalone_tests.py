@@ -162,7 +162,58 @@ def clean_function(x: int) -> int:
     assert '"repository": "acme/service"' in json_report
     print("PASS: JSON Executive Review Report Generation")
 
-    print("\nAll standalone performance, quality, test generator, doc generator, and report generator engine tests passed successfully!")
+    print("\n--- Running Extended QA & Integration Suite ---")
+    import tests.test_auth_and_oauth as t_auth
+    t_auth.test_jwt_token_generation_and_decoding()
+    t_auth.test_token_encryption_and_decryption()
+    t_auth.test_invalid_jwt_token_decoding()
+    t_auth.test_mocked_github_oauth_callback_flow()
+    print("PASS: Authentication & OAuth Flow Tests")
+
+    import tests.test_repository_management as t_repo
+    t_repo.test_repository_response_schema()
+    t_repo.test_repository_settings_defaults()
+    t_repo.test_repository_pagination_mock()
+    print("PASS: Repository Management & Pagination Tests")
+
+    import tests.test_github_webhooks as t_wh
+    t_wh.test_valid_github_webhook_hmac_signature()
+    t_wh.test_invalid_github_webhook_hmac_signature()
+    t_wh.test_webhook_event_parsing_opened()
+    print("PASS: GitHub Webhooks Signature & Event Ingestion Tests")
+
+    import tests.test_pull_request_analysis as t_pr
+    t_pr.test_language_detection_from_filenames()
+    t_pr.test_parse_unified_diff_hunks_and_lines()
+    t_pr.test_parse_unified_diff_empty_or_none()
+    print("PASS: Pull Request Unified Diff Parsing & Language Detection Tests")
+
+    import tests.test_analysis_engines as t_eng
+    t_eng.test_code_quality_calculator_metrics()
+    t_eng.test_security_analyzer_engine_patterns()
+    t_eng.test_performance_analyzer_engine_patterns()
+    print("PASS: Analysis Engines (Static, SAST, Perf, Quality) Tests")
+
+    import tests.test_review_finalization as t_fin
+    t_fin.test_review_summary_markdown_payload_formatting()
+    t_fin.test_diff_line_mapping_safe_verification()
+    print("PASS: Review Finalization & Line Mapping Tests")
+
+    import tests.test_repository_settings as t_sett
+    t_sett.test_default_repository_settings_schema()
+    t_sett.test_resolve_effective_settings_with_custom_overrides()
+    t_sett.test_file_exclusion_filtering_directories()
+    t_sett.test_file_exclusion_filtering_filenames()
+    t_sett.test_file_exclusion_filtering_unsupported_extensions()
+    t_sett.test_repository_settings_update_schema_validation()
+    print("PASS: Repository Settings CRUD & Path Exclusion Tests")
+
+    import tests.test_e2e_integration as t_e2e
+    t_e2e.test_complete_end_to_end_review_pipeline_flow()
+    print("PASS: End-to-End Workflow Integration Test")
+
+    print("\nAll backend engine, API, webhook, security, quality, finalization, settings, and E2E integration tests passed successfully!")
 
 if __name__ == "__main__":
     run_tests()
+
