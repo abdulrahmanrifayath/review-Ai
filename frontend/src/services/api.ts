@@ -234,3 +234,19 @@ export const notificationsApi = {
     return res.data
   },
 }
+
+export const repositorySettingsApi = {
+  getSettings: async (repositoryId: string) => {
+    const res = await apiClient.get(`/repositories/${repositoryId}/settings`)
+    return res.data
+  },
+  updateSettings: async (repositoryId: string, settings: Record<string, unknown>) => {
+    const res = await apiClient.put(`/repositories/${repositoryId}/settings`, settings)
+    return res.data
+  },
+  resetSettings: async (repositoryId: string) => {
+    const res = await apiClient.post(`/repositories/${repositoryId}/settings/reset`)
+    return res.data
+  },
+}
+

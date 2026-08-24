@@ -40,6 +40,11 @@ class AIReviewContextBuilder:
         if not repo or not pr:
             return {}
 
+        # Fetch Effective Settings
+        from app.services.repository_settings_service import RepositorySettingsService
+        settings_service = RepositorySettingsService(self.db)
+        settings = await settings_service.get_effective_settings(repository_id)
+
         # Fetch Changed Files
         cf_stmt = select(ChangedFile).where(ChangedFile.pull_request_id == pr.id)
         cf_res = await self.db.execute(cf_stmt)
@@ -47,6 +52,9 @@ class AIReviewContextBuilder:
 
         files_payload: list[dict[str, Any]] = []
         for cf in changed_files:
+            if settings_service.is_file_excluded(cf.filename, settings):
+                continue
+
             files_payload.append({
                 "filename": cf.filename,
                 "status": cf.status,
@@ -56,6 +64,7 @@ class AIReviewContextBuilder:
                 "patch": cf.patch,
                 "parsed_diff": cf.parsed_diff,
             })
+
 
         # Fetch Static Analysis Findings
         job_stmt = select(ReviewJob).where(ReviewJob.pull_request_id == pr.id).order_by(ReviewJob.created_at.desc())
@@ -109,7 +118,9 @@ class AIReviewContextBuilder:
                 "deletions": pr.deletions,
             },
             "changed_files": files_payload,
+            "settings": settings.model_dump(),
             "static_analysis": {
+
                 "security_findings": security_findings,
                 "code_smells": code_smells,
             },

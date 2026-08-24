@@ -18,6 +18,17 @@ class AIReviewEngine:
         """
         Execute AI code review analysis for given PR context.
         """
+        # Check settings overrides
+        repo_settings = context.get("settings", {})
+        if repo_settings.get("ai_review_enabled") is False or repo_settings.get("analysis_enabled") is False:
+            return {
+                "summary": "AI Review skipped as per repository configuration settings.",
+                "score": 100,
+                "recommendation": repo_settings.get("review_mode", "APPROVE"),
+                "findings": [],
+                "inline_comments": [],
+            }
+
         api_key = settings.OPENAI_API_KEY
         if not api_key or api_key == "your_openai_api_key_here":
             logger.info("OPENAI_API_KEY is not configured; running rule-based heuristic AI engine.")
@@ -43,6 +54,7 @@ class AIReviewEngine:
         except Exception as exc:
             logger.warning("OpenAI API call failed (%s); falling back to heuristic engine.", str(exc))
             return AIReviewEngine._run_heuristic_fallback_review(context)
+
 
     @staticmethod
     def _normalize_review_response(data: dict[str, Any]) -> dict[str, Any]:
@@ -138,12 +150,28 @@ class AIReviewEngine:
                         "suggestion": "// TODO resolved",
                     })
 
+        # Filter by min_severity_level and max_findings_limit
+        repo_settings = context.get("settings", {})
+        min_sev = repo_settings.get("min_severity_level", "LOW").upper()
+        max_limit = repo_settings.get("max_findings_limit", 50)
+
+        severity_ranks = {"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+        min_rank = severity_ranks.get(min_sev, 1)
+
+        filtered_findings = [
+            f for f in findings if severity_ranks.get(f.get("severity", "LOW").upper(), 1) >= min_rank
+        ][:max_limit]
+
         score = max(50, min(100, score))
-        recommendation = "APPROVE" if score >= 85 else ("REQUEST_CHANGES" if score < 70 else "COMMENT")
+        configured_mode = repo_settings.get("review_mode")
+        if configured_mode and configured_mode != "AUTO":
+            recommendation = configured_mode
+        else:
+            recommendation = "APPROVE" if score >= 85 else ("REQUEST_CHANGES" if score < 70 else "COMMENT")
 
         summary = (
             f"AI Review completed for PR #{pr.get('number')}. "
-            f"Analyzed {len(files)} changed files and identified {len(findings)} findings. "
+            f"Analyzed {len(files)} changed files and identified {len(filtered_findings)} findings. "
             f"Overall quality score is {score}%."
         )
 
@@ -151,6 +179,7 @@ class AIReviewEngine:
             "summary": summary,
             "score": score,
             "recommendation": recommendation,
-            "findings": findings,
+            "findings": filtered_findings,
             "inline_comments": inline_comments,
         }
+
