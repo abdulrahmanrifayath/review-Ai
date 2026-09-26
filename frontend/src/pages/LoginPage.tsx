@@ -34,11 +34,16 @@ export const LoginPage: React.FC = () => {
     try {
       await loginWithGitHub()
     } catch (err: unknown) {
-      const errorObj = err as { response?: { data?: { error?: { message?: string } } } }
-      const msg =
-        errorObj.response?.data?.error?.message ||
-        'GitHub OAuth is not configured on this server. Please set GITHUB_CLIENT_ID in your backend .env file or sign in with Email & Password.'
-      setError(msg)
+      const errorObj = err as { response?: { data?: { error?: { message?: string }; detail?: string } } }
+      if (!errorObj.response) {
+        setError('Cannot connect to backend API server. Please ensure the backend is running at http://localhost:8000.')
+      } else {
+        const msg =
+          errorObj.response.data?.error?.message ||
+          errorObj.response.data?.detail ||
+          'GitHub OAuth is not configured on this server. Please set GITHUB_CLIENT_ID in your backend .env file or sign in with Email & Password.'
+        setError(msg)
+      }
     } finally {
       setGithubLoading(false)
     }
@@ -118,6 +123,19 @@ export const LoginPage: React.FC = () => {
             </>
           )}
         </button>
+
+        <div className="pt-2 text-center">
+          <button
+            type="button"
+            onClick={() => {
+              setEmail('abdulrahmanrifayath264@gmail.com')
+              setPassword('password123')
+            }}
+            className="text-xs text-brand-400 hover:text-brand-300 underline underline-offset-4 transition-colors"
+          >
+            Auto-fill Local Developer Credentials
+          </button>
+        </div>
       </div>
     </div>
   )
